@@ -147,7 +147,7 @@ npm run e2e     # against the real database: the full CRUD + RBAC matrix
 
 ```
 prisma/
-  schema.prisma        Models: User, Post, RefreshToken + the Role enum
+  schema.prisma        Models: User, Post, Book, RefreshToken + the Role enum
   seed.ts              Idempotent seed
 prisma.config.ts       Prisma 7 config (migration URL, seed command)
 scripts/
@@ -189,6 +189,9 @@ so a rule cannot be bypassed by reaching a service from a different route.
 | Read unpublished posts | ❌ | own only | ✅ all |
 | Create a post | ❌ | ✅ | ✅ |
 | Edit / delete a post | ❌ | own only | ✅ any |
+| List / read published books | ❌ | ✅ | ✅ |
+| Read unpublished books | ❌ | ❌ | ✅ |
+| Upload / edit / delete a book | ❌ | ❌ | ✅ |
 | Update own profile | ❌ | ✅ | ✅ |
 | List / read users | ❌ | ❌ | ✅ |
 | Create / edit / delete users | ❌ | ❌ | ✅ |
@@ -242,6 +245,51 @@ Base URL: `/api/v1`. Send the access token as `Authorization: Bearer <token>`.
 | `POST` | `/posts` | Authenticated |
 | `PATCH` | `/posts/:id` | Owner or admin |
 | `DELETE` | `/posts/:id` | Owner or admin |
+
+### Books (EPUB library)
+
+Uploading is admin-only; every signed-in user can list, read and download.
+Nothing here is public — unlike posts, the whole module sits behind
+`authenticate`.
+
+| Method | Path | Access |
+| --- | --- | --- |
+| `GET` | `/books` | Authenticated — `?page=`, `?limit=`, `?search=`, `?published=`, `?sortBy=` |
+| `GET` | `/books/:id` | Authenticated — published only, unless admin |
+| `GET` | `/books/:id/file` | Authenticated — streams the EPUB; `?download=true` for an attachment |
+| `POST` | `/books` | **Admin** — `multipart/form-data`, file field `file` |
+| `PATCH` | `/books/:id` | **Admin** — metadata only |
+| `DELETE` | `/books/:id` | **Admin** — removes the row and the file |
+
+Uploading, as a form post:
+
+```bash
+curl -X POST http://localhost:4000/api/v1/books   -H "Authorization: Bearer $ADMIN_TOKEN"   -F "title=Moby Dick"   -F "author=Herman Melville"   -F "published=true"   -F "file=@moby-dick.epub;type=application/epub+zip"
+```
+
+What the upload path enforces:
+
+- **The role gate runs before multer**, so a `USER`'s upload is refused on the
+  headers rather than after megabytes have been buffered.
+- **The bytes decide, not the filename.** `Content-Type` and the `.epub`
+  extension are both attacker-controlled, so the file is only accepted if it
+  really is an OCF container: a ZIP whose first entry is an uncompressed
+  `mimetype` holding `application/epub+zip` (`src/modules/books/epub.ts`).
+- **Nothing is written until it has been validated** — the file is buffered in
+  memory, capped at `EPUB_MAX_BYTES` (a too-large upload is a 413).
+- **The stored name is a server-generated UUID**, never the uploaded filename,
+  so a crafted name cannot traverse out of the upload directory. `originalName`
+  is kept for the download only, stripped of control characters.
+- **SHA-256 is unique across the library**, so re-uploading the same file is a
+  409 rather than a second copy.
+- **The blob is written before the row and removed if the insert fails**: an
+  orphaned file is sweepable, a row pointing at nothing is a broken download.
+
+Files live on local disk under `UPLOAD_DIR` (`./uploads/epubs`). That directory
+is the whole storage contract — `src/utils/fileStorage.ts` is the only module
+that knows where bytes physically live, so moving the library to S3/R2 means
+reimplementing four functions. On an ephemeral container filesystem, point
+`UPLOAD_DIR` at a mounted volume or the files vanish on the next deploy.
 
 ### Response shape
 

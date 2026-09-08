@@ -3,6 +3,7 @@ import { prisma } from './config/prisma';
 import authRoutes from './modules/auth/auth.routes';
 import userRoutes from './modules/users/user.routes';
 import postRoutes from './modules/posts/post.routes';
+import bookRoutes from './modules/books/book.routes';
 
 const router = Router();
 
@@ -19,5 +20,6 @@ router.get('/health', async (_req, res) => {
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/posts', postRoutes);
+router.use('/books', bookRoutes);
 
 export default router;

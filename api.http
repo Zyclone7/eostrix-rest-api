@@ -151,6 +151,65 @@ Content-Type: application/json
 DELETE {{baseUrl}}/users/PASTE-A-USER-ID-HERE
 Authorization: Bearer {{adminToken}}
 
+### -------------------------------------------------------------- BOOKS ----
+### The EPUB library: ADMIN uploads, any signed-in user reads.
+### Point the file path below at a real .epub on disk.
+
+### List the library — any signed-in user (published books only)
+GET {{baseUrl}}/books?page=1&limit=20
+Authorization: Bearer {{userToken}}
+
+### Search the library
+GET {{baseUrl}}/books?search=melville&sortBy=title&sortOrder=asc
+Authorization: Bearer {{userToken}}
+
+### Read one book's metadata
+GET {{baseUrl}}/books/PASTE-A-BOOK-ID-HERE
+Authorization: Bearer {{userToken}}
+
+### Read the file itself — inline, for an in-browser reader
+GET {{baseUrl}}/books/PASTE-A-BOOK-ID-HERE/file
+Authorization: Bearer {{userToken}}
+
+### Download the file as an attachment
+GET {{baseUrl}}/books/PASTE-A-BOOK-ID-HERE/file?download=true
+Authorization: Bearer {{userToken}}
+
+### Upload a book — ADMIN only, multipart/form-data
+POST {{baseUrl}}/books
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----Boundary
+
+------Boundary
+Content-Disposition: form-data; name="title"
+
+Moby Dick
+------Boundary
+Content-Disposition: form-data; name="author"
+
+Herman Melville
+------Boundary
+Content-Disposition: form-data; name="published"
+
+true
+------Boundary
+Content-Disposition: form-data; name="file"; filename="moby-dick.epub"
+Content-Type: application/epub+zip
+
+< ./moby-dick.epub
+------Boundary--
+
+### Edit metadata — ADMIN only (the file itself is immutable)
+PATCH {{baseUrl}}/books/PASTE-A-BOOK-ID-HERE
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "published": false, "description": "Staged, hidden from readers" }
+
+### Delete a book — ADMIN only; the stored file goes with it
+DELETE {{baseUrl}}/books/PASTE-A-BOOK-ID-HERE
+Authorization: Bearer {{adminToken}}
+
 ### ------------------------------------------------- EXPECTED REJECTIONS ----
 
 ### 401 — no token
@@ -165,3 +224,35 @@ POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 { "name": "X", "email": "not-an-email", "password": "weak" }
+
+### 403 — USER trying to upload a book
+POST {{baseUrl}}/books
+Authorization: Bearer {{userToken}}
+Content-Type: multipart/form-data; boundary=----Boundary
+
+------Boundary
+Content-Disposition: form-data; name="title"
+
+Not allowed
+------Boundary
+Content-Disposition: form-data; name="file"; filename="moby-dick.epub"
+Content-Type: application/epub+zip
+
+< ./moby-dick.epub
+------Boundary--
+
+### 400 — a renamed .zip or .pdf is not an EPUB, whatever the extension says
+POST {{baseUrl}}/books
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=----Boundary
+
+------Boundary
+Content-Disposition: form-data; name="title"
+
+Impostor
+------Boundary
+Content-Disposition: form-data; name="file"; filename="fake.epub"
+Content-Type: application/epub+zip
+
+< ./README.md
+------Boundary--

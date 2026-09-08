@@ -59,6 +59,8 @@ const server = app.listen(0, async () => {
   // stripping is covered without side effects by tests/unit/schemas.test.ts
   // and tests/integration/api.test.ts, where Prisma is mocked.
   await check('bad uuid param -> 400', 400, '/posts/not-a-uuid');
+  await check('book library without token -> 401', 401, '/books');
+  await check('book upload without token -> 401', 401, '/books', { method: 'POST' });
   await check('malformed JSON -> 400', 400, '/auth/login', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

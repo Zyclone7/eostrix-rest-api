@@ -14,5 +14,13 @@ process.env.JWT_REFRESH_EXPIRES_IN = '7d';
 process.env.CORS_ORIGINS = 'http://localhost:3000,http://localhost:5173';
 // The floor allowed by the env schema — keeps bcrypt work low so the suite is fast.
 process.env.BCRYPT_ROUNDS = '10';
+// Uploads are redirected into the OS temp directory, so a test run can never
+// write into (or delete from) the developer's real ./uploads folder.
+process.env.UPLOAD_DIR = require('node:path').join(
+  require('node:os').tmpdir(),
+  'express-ts-api-test-uploads',
+);
+// A small ceiling keeps the "file too large" test cheap.
+process.env.EPUB_MAX_BYTES = String(1024 * 1024);
 process.env.SEED_ADMIN_EMAIL = 'admin@example.com';
 process.env.SEED_ADMIN_PASSWORD = 'Admin123!pass';

@@ -37,6 +37,7 @@ model User {
 
   posts         Post[]
   refreshTokens RefreshToken[]
+  books         Book[]
 
   @@index([role])
   @@map("users")
@@ -58,6 +59,44 @@ model Post {
   @@index([published])
   @@index([createdAt])
   @@map("posts")
+}
+
+/// An EPUB in the library. Only an ADMIN may upload, replace or delete one;
+/// every authenticated reader may list and download a published book.
+///
+/// The row holds metadata only — the bytes live in the storage backend under
+/// `storageKey`, which keeps large binaries out of Postgres and lets the file
+/// be streamed with Range support.
+model Book {
+  id          String   @id @default(uuid()) @db.Uuid
+  title       String
+  author      String?
+  description String?
+  language    String?
+  /// Unpublished books are visible to admins only — the staging state for a
+  /// book that is uploaded but not yet released to readers.
+  published   Boolean  @default(false)
+
+  /// The name the admin's browser sent, kept only to name the download.
+  originalName String
+  /// Opaque `<uuid>.epub` name on disk. Never derived from user input, so a
+  /// crafted filename cannot escape the upload directory.
+  storageKey   String  @unique
+  mimeType     String  @default("application/epub+zip")
+  sizeBytes    Int
+  /// SHA-256 of the file, for integrity checks and duplicate detection.
+  checksum     String  @unique
+
+  uploadedById String   @db.Uuid
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  uploadedBy User @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  @@index([uploadedById])
+  @@index([published])
+  @@index([createdAt])
+  @@map("books")
 }
 
 /// Refresh tokens are stored as SHA-256 hashes so a database leak

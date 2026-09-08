@@ -21,6 +21,13 @@ const envSchema = z.object({
   CORS_ORIGINS: z.string().default('http://localhost:3000'),
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
 
+  /// Where uploaded EPUBs are written. Relative paths resolve from the
+  /// process working directory. On an ephemeral filesystem (Render, Fly,
+  /// Heroku) point this at a mounted volume, or swap the storage backend.
+  UPLOAD_DIR: z.string().min(1).default('./uploads'),
+  /// Hard ceiling on a single uploaded file, in bytes (default 25 MiB).
+  EPUB_MAX_BYTES: z.coerce.number().int().min(1024).max(500 * 1024 * 1024).default(25 * 1024 * 1024),
+
   SEED_ADMIN_EMAIL: z.email().default('admin@example.com'),
   SEED_ADMIN_PASSWORD: z.string().min(8).default('Admin123!pass'),
   SEED_ADMIN_NAME: z.string().default('Site Admin'),

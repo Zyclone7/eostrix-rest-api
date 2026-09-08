@@ -27,6 +27,24 @@ function section(title: string): void {
   console.log(`\n${title}`);
 }
 
+/**
+ * The smallest byte sequence the upload endpoint will accept: a ZIP local file
+ * header for a stored `mimetype` entry holding `application/epub+zip`. Written
+ * out by hand so the run does not depend on a binary fixture in the repo.
+ */
+function minimalEpub(marker: string): Buffer {
+  const name = Buffer.from('mimetype', 'latin1');
+  const content = Buffer.from('application/epub+zip', 'latin1');
+  const header = Buffer.alloc(30);
+  header.writeUInt32LE(0x04034b50, 0);
+  header.writeUInt16LE(20, 4);
+  header.writeUInt16LE(0, 8); // stored, as the OCF spec requires
+  header.writeUInt32LE(content.length, 18);
+  header.writeUInt32LE(content.length, 22);
+  header.writeUInt16LE(name.length, 26);
+  return Buffer.concat([header, name, content, Buffer.from(marker, 'utf8')]);
+}
+
 interface ApiResponse {
   status: number;
   // Test-script convenience: responses are probed loosely.
@@ -226,6 +244,110 @@ async function main(): Promise<void> {
       staleRefresh.status === 401,
       String(staleRefresh.status),
     );
+
+    section('EPUB library');
+    const bookTitle = `E2E Book ${stamp}`;
+
+    async function uploadBook(
+      token: string,
+      bytes: Buffer,
+      fields: Record<string, string>,
+      filename = 'e2e.epub',
+    ): Promise<ApiResponse> {
+      const form = new FormData();
+      for (const [key, value] of Object.entries(fields)) form.append(key, value);
+      // Copied into a plain Uint8Array: Node's Buffer is backed by a shared
+      // pool, which Blob's type does not accept.
+      form.append('file', new Blob([Uint8Array.from(bytes)], { type: 'application/epub+zip' }), filename);
+
+      // No content-type header: fetch sets the multipart boundary itself.
+      const res = await fetch(`${base}/books`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const text = await res.text();
+      return { status: res.status, body: text ? JSON.parse(text) : null };
+    }
+
+    const anonBooks = await call('GET', '/books');
+    assert('the library is not public (401)', anonBooks.status === 401, String(anonBooks.status));
+
+    const userUpload = await uploadBook(bobToken, minimalEpub('by-user'), { title: 'Nope' });
+    assert('USER cannot upload a book (403)', userUpload.status === 403, String(userUpload.status));
+
+    const badUpload = await uploadBook(adminToken, Buffer.from('%PDF-1.7 not a book'), {
+      title: bookTitle,
+    });
+    assert(
+      'a non-EPUB payload is rejected whatever its extension (400)',
+      badUpload.status === 400,
+      String(badUpload.status),
+    );
+
+    const epubBytes = minimalEpub(`e2e-${stamp}`);
+    const upload = await uploadBook(adminToken, epubBytes, {
+      title: bookTitle,
+      author: 'E2E Runner',
+      published: 'true',
+    });
+    assert('ADMIN can upload an EPUB (201)', upload.status === 201, JSON.stringify(upload.body));
+    const bookId: string = upload.body?.data?.book?.id;
+    assert('the upload records a checksum', /^[0-9a-f]{64}$/.test(upload.body?.data?.book?.checksum ?? ''));
+    assert(
+      'the storage key is never disclosed to the client',
+      !JSON.stringify(upload.body).includes('storageKey'),
+    );
+
+    const duplicateBook = await uploadBook(adminToken, epubBytes, { title: `${bookTitle} again` });
+    assert(
+      're-uploading the same file is a 409',
+      duplicateBook.status === 409,
+      String(duplicateBook.status),
+    );
+
+    const readerReads = await call('GET', `/books/${bookId}`, { token: bobToken });
+    assert('USER can read a published book', readerReads.status === 200, String(readerReads.status));
+
+    const fileRes = await fetch(`${base}/books/${bookId}/file`, {
+      headers: { authorization: `Bearer ${bobToken}` },
+    });
+    const downloaded = Buffer.from(await fileRes.arrayBuffer());
+    assert('USER can download the file', fileRes.status === 200, String(fileRes.status));
+    assert(
+      'the bytes come back byte-for-byte',
+      downloaded.equals(epubBytes),
+      `${downloaded.length} vs ${epubBytes.length}`,
+    );
+    assert(
+      'the file is served as an EPUB',
+      fileRes.headers.get('content-type') === 'application/epub+zip',
+      String(fileRes.headers.get('content-type')),
+    );
+
+    const unpublish = await call('PATCH', `/books/${bookId}`, {
+      token: adminToken,
+      body: { published: false },
+    });
+    assert('ADMIN can unpublish a book', unpublish.status === 200, String(unpublish.status));
+
+    const hidden = await call('GET', `/books/${bookId}`, { token: bobToken });
+    assert('an unpublished book is a 404 for a USER', hidden.status === 404, String(hidden.status));
+
+    const hiddenFile = await call('GET', `/books/${bookId}/file`, { token: bobToken });
+    assert('its file is a 404 too', hiddenFile.status === 404, String(hiddenFile.status));
+
+    const adminSees = await call('GET', `/books/${bookId}`, { token: adminToken });
+    assert('ADMIN still sees the unpublished book', adminSees.status === 200, String(adminSees.status));
+
+    const userDeletesBook = await call('DELETE', `/books/${bookId}`, { token: bobToken });
+    assert('USER cannot delete a book (403)', userDeletesBook.status === 403, String(userDeletesBook.status));
+
+    const adminDeletesBook = await call('DELETE', `/books/${bookId}`, { token: adminToken });
+    assert('ADMIN can delete a book (204)', adminDeletesBook.status === 204, String(adminDeletesBook.status));
+
+    const goneFile = await call('GET', `/books/${bookId}/file`, { token: adminToken });
+    assert('the deleted book is gone (404)', goneFile.status === 404, String(goneFile.status));
 
     section('Refresh token rotation');
     // The promotion above deliberately revoked every session Alice had, so

@@ -7,3 +7,6 @@ src/generated/
 !.env.example
 *.log
 .DS_Store
+
+# Uploaded files (EPUB library)
+uploads/

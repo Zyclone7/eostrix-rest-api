@@ -7,6 +7,7 @@ jest.mock('../../src/config/prisma', () =>
   require('../helpers/prismaMock').buildPrismaModuleMock(),
 );
 
+import fs from 'node:fs/promises';
 import request from 'supertest';
 import { createApp } from '../../src/app';
 import * as prismaModule from '../../src/config/prisma';
@@ -14,6 +15,8 @@ import { prismaMockFrom } from '../helpers/prismaMock';
 import { hashPassword } from '../../src/utils/password';
 import { signAccessToken } from '../../src/utils/jwt';
 import { Role } from '../../src/generated/prisma/enums';
+import { notAnArchive, validEpub } from '../helpers/epubFixture';
+import { env } from '../../src/config/env';
 
 const db = prismaMockFrom(prismaModule);
 const app = createApp();
@@ -21,6 +24,7 @@ const app = createApp();
 const USER_ID = '3f1e0c6a-2b7d-4a5e-9c31-0a1b2c3d4e5f';
 const ADMIN_ID = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
 const POST_ID = '11111111-2222-4333-8444-555555555555';
+const BOOK_ID = '22222222-3333-4444-8555-666666666666';
 const PASSWORD = 'Str0ngPass!23';
 
 let passwordHash: string;
@@ -380,4 +384,169 @@ describe('PATCH /users/me', () => {
     expect(res.status).toBe(200);
     expect(db.user.update.mock.calls[0][0].data).toEqual({ name: 'Renamed' });
   });
+});
+
+describe('books', () => {
+  /** The multipart request an admin's upload form produces. */
+  function upload(token: string, file: Buffer, filename = 'moby.epub') {
+    return request(app)
+      .post('/api/v1/books')
+      .set('Authorization', `Bearer ${token}`)
+      .field('title', 'Moby Dick')
+      .field('published', 'true')
+      .attach('file', file, { filename, contentType: 'application/epub+zip' });
+  }
+
+  it('requires a session even to list the library', async () => {
+    const res = await request(app).get('/api/v1/books');
+
+    expect(res.status).toBe(401);
+  });
+
+  it('lets a signed-in reader list published books only', async () => {
+    const token = tokenFor(Role.USER);
+    db.book.findMany.mockResolvedValue([]);
+    db.book.count.mockResolvedValue(0);
+
+    const res = await request(app).get('/api/v1/books').set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(db.book.findMany.mock.calls[0][0].where.AND[0]).toEqual({ published: true });
+  });
+
+  it('refuses an upload from a USER with 403', async () => {
+    const token = tokenFor(Role.USER);
+
+    const res = await upload(token, validEpub('forbidden'));
+
+    expect(res.status).toBe(403);
+    expect(db.book.create).not.toHaveBeenCalled();
+  });
+
+  it('accepts an upload from an ADMIN', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.book.findUnique.mockResolvedValue(null);
+    db.book.create.mockImplementation(({ data }: { data: Record<string, unknown> }) => ({
+      id: BOOK_ID,
+      ...data,
+    }));
+
+    const res = await upload(token, validEpub('accepted'));
+
+    expect(res.status).toBe(201);
+    expect(db.book.create.mock.calls[0][0].data.uploadedById).toBe(ADMIN_ID);
+  });
+
+  it('rejects a non-EPUB payload wearing an .epub extension', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.book.findUnique.mockResolvedValue(null);
+
+    const res = await upload(token, notAnArchive());
+
+    expect(res.status).toBe(400);
+    expect(db.book.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a file that is not named .epub', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+
+    const res = await upload(token, validEpub('wrong-name'), 'book.pdf');
+
+    expect(res.status).toBe(400);
+  });
+
+  it('requires the title metadata field', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+
+    const res = await request(app)
+      .post('/api/v1/books')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', validEpub('no-title'), {
+        filename: 'moby.epub',
+        contentType: 'application/epub+zip',
+      });
+
+    expect(res.status).toBe(400);
+    expect(db.book.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a delete from a USER', async () => {
+    const token = tokenFor(Role.USER);
+
+    const res = await request(app)
+      .delete(`/api/v1/books/${BOOK_ID}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(403);
+    expect(db.book.delete).not.toHaveBeenCalled();
+  });
+
+  it('rejects a file over the size limit with 413', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    const oversized = Buffer.concat([validEpub('big'), Buffer.alloc(env.EPUB_MAX_BYTES)]);
+
+    const res = await upload(token, oversized);
+
+    expect(res.status).toBe(413);
+    expect(db.book.create).not.toHaveBeenCalled();
+  });
+
+  it('streams the stored file back to a reader', async () => {
+    const adminToken = tokenFor(Role.ADMIN, ADMIN_ID);
+    const bytes = validEpub('streamed');
+    db.book.findUnique.mockResolvedValue(null);
+    db.book.create.mockImplementation(({ data }: { data: Record<string, unknown> }) => ({
+      id: BOOK_ID,
+      ...data,
+    }));
+    await upload(adminToken, bytes);
+    const stored = db.book.create.mock.calls[0][0].data;
+
+    const readerToken = tokenFor(Role.USER);
+    db.book.findUnique.mockResolvedValue({
+      id: BOOK_ID,
+      title: 'Moby Dick',
+      published: true,
+      storageKey: stored.storageKey,
+      originalName: 'moby.epub',
+      mimeType: 'application/epub+zip',
+      sizeBytes: bytes.length,
+    });
+
+    const res = await request(app)
+      .get(`/api/v1/books/${BOOK_ID}/file?download=true`)
+      .set('Authorization', `Bearer ${readerToken}`)
+      .buffer(true)
+      .parse((response, callback) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/epub+zip');
+    expect(res.headers['content-disposition']).toBe('attachment; filename="moby-dick.epub"');
+    expect(res.headers['cache-control']).toContain('private');
+    expect(Buffer.from(res.body).equals(bytes)).toBe(true);
+  });
+
+  it('hides an unpublished book from a reader as a 404', async () => {
+    const token = tokenFor(Role.USER);
+    db.book.findUnique.mockResolvedValue({
+      id: BOOK_ID,
+      title: 'Draft',
+      published: false,
+      storageKey: 'x.epub',
+    });
+
+    const res = await request(app)
+      .get(`/api/v1/books/${BOOK_ID}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(404);
+  });
+});
+// Uploads land in the temp directory named by tests/setup-env.ts.
+afterAll(async () => {
+  await fs.rm(env.UPLOAD_DIR, { recursive: true, force: true });
 });

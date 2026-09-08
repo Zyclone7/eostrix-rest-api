@@ -29,6 +29,7 @@ export interface ModelMock {
 export interface PrismaMock {
   user: ModelMock;
   post: ModelMock;
+  book: ModelMock;
   refreshToken: ModelMock;
   $transaction: Mock;
   $queryRaw: Mock;
@@ -56,6 +57,7 @@ export function buildPrismaModuleMock() {
   const prisma: PrismaMock = {
     user: model(),
     post: model(),
+    book: model(),
     refreshToken: model(),
     // The services pass an array of promises; resolving them mirrors the real
     // client closely enough for assertions about what was queried.
