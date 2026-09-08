@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch supersedes the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Unit tests set their own environment in tests/setup-env.ts. These values
+  # exist for the steps that boot the app (build, smoke), which validate
+  # src/config/env at import time and refuse to start without them.
+  # They are throwaway CI values, not secrets.
+  NODE_ENV: test
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci_test
+  JWT_ACCESS_SECRET: ci-only-access-secret-value-32-chars-min!!
+  JWT_REFRESH_SECRET: ci-only-refresh-secret-value-32-chars-min!
+  CORS_ORIGINS: http://localhost:3000
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Prisma 7 requires ^20.19 || ^22.12 || >=24.
+        node: ['20.x', '22.x', '24.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `npm ci` fails if package-lock.json has drifted from package.json,
+      # and its postinstall hook generates the Prisma client (no DB needed).
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate the Prisma schema
+        run: npx prisma validate
+
+      - name: Typecheck (src and tests)
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test -- --coverage --ci --runInBand
+
+      - name: Build
+        run: npm run build
+
+      # Boots the real Express app and exercises the HTTP layer. No database is
+      # running in this job, which is the point: it must not need one.
+      - name: Smoke test
+        run: npm run smoke
+
+      - name: Upload coverage
+        if: matrix.node == '24.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  e2e:
+    name: End-to-end (PostgreSQL)
+    runs-on: ubuntu-latest
+
+    # Stands in for Neon. The application code is identical against either —
+    # only the connection string differs.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/ci_test
+      SEED_ADMIN_EMAIL: admin@example.com
+      SEED_ADMIN_PASSWORD: Admin123!pass
+      SEED_ADMIN_NAME: CI Admin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create the schema
+        # Once `prisma migrate dev` has been run locally and prisma/migrations
+        # is committed, this applies those migrations — which also verifies they
+        # actually replay onto an empty database. Until then it pushes the
+        # schema directly so the suite can still run.
+        run: |
+          if [ -d prisma/migrations ]; then
+            echo "Applying committed migrations"
+            npm run prisma:deploy
+          else
+            echo "No migrations committed yet — pushing the schema directly"
+            npx prisma db push --skip-generate
+          fi
+
+      - name: Seed
+        run: npm run db:seed
+
+      - name: End-to-end tests
+        run: npm run e2e
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Gates the shipped tree only, with the Prisma CLI's own advisories
+      # explicitly accounted for — see the comment in scripts/audit-prod.js.
+      - name: Audit production dependencies
+        run: npm run audit:prod
+
+      # Informational: the full tree including devDependencies. Never blocks.
+      - name: Full audit (informational)
+        if: always()
+        run: npm audit || true

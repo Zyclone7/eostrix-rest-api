@@ -1,0 +1,167 @@
+### Manual request collection.
+### Works with the VS Code "REST Client" extension or JetBrains HTTP Client.
+### Run them top to bottom — later requests reuse tokens captured from earlier ones.
+
+@baseUrl = http://localhost:4000/api/v1
+
+### Health check
+GET {{baseUrl}}/health
+
+### ---------------------------------------------------------------- AUTH ----
+
+# @name register
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Demo Person",
+  "email": "demo.person@example.com",
+  "password": "Str0ngPass!23",
+  "role": "ADMIN"
+}
+
+### ^ Note: the "role" above is deliberately ignored — the new account is a USER.
+
+@userToken = {{register.response.body.data.accessToken}}
+@userRefresh = {{register.response.body.data.refreshToken}}
+
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@example.com",
+  "password": "Admin123!pass"
+}
+
+@adminToken = {{loginAdmin.response.body.data.accessToken}}
+
+### Current profile
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{userToken}}
+
+### Rotate the refresh token (the old one dies immediately)
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "{{userRefresh}}" }
+
+### Change password (revokes every other session)
+PATCH {{baseUrl}}/auth/change-password
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "currentPassword": "Str0ngPass!23",
+  "newPassword": "An0therPass!45"
+}
+
+### Sign out of everything
+POST {{baseUrl}}/auth/logout-all
+Authorization: Bearer {{userToken}}
+
+### --------------------------------------------------------------- POSTS ----
+
+# @name createPost
+POST {{baseUrl}}/posts
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "title": "My first post",
+  "content": "Written by the authenticated user.",
+  "published": true
+}
+
+@postId = {{createPost.response.body.data.post.id}}
+
+### Public list (published posts only when anonymous)
+GET {{baseUrl}}/posts?page=1&limit=10&sortBy=createdAt&sortOrder=desc
+
+### Search
+GET {{baseUrl}}/posts?search=first
+
+### Only my own posts (drafts included)
+GET {{baseUrl}}/posts?mine=true
+Authorization: Bearer {{userToken}}
+
+### Read one
+GET {{baseUrl}}/posts/{{postId}}
+
+### Update (owner or admin only)
+PATCH {{baseUrl}}/posts/{{postId}}
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "title": "My first post, revised", "published": false }
+
+### An admin may edit anyone's post
+PATCH {{baseUrl}}/posts/{{postId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "title": "Edited by an administrator" }
+
+### Delete
+DELETE {{baseUrl}}/posts/{{postId}}
+Authorization: Bearer {{userToken}}
+
+### --------------------------------------------------------------- USERS ----
+
+### Self-service profile update (role/isActive are ignored here)
+PATCH {{baseUrl}}/users/me
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "name": "Renamed Person" }
+
+### List users — ADMIN only, returns 403 for a USER token
+GET {{baseUrl}}/users?page=1&limit=20&sortBy=createdAt&sortOrder=desc
+Authorization: Bearer {{adminToken}}
+
+### Filter by role and activation
+GET {{baseUrl}}/users?role=USER&isActive=true&search=demo
+Authorization: Bearer {{adminToken}}
+
+### Create a user with an explicit role — ADMIN only
+POST {{baseUrl}}/users
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Second Admin",
+  "email": "second.admin@example.com",
+  "password": "Str0ngPass!23",
+  "role": "ADMIN",
+  "isActive": true
+}
+
+### Read one user — ADMIN only
+GET {{baseUrl}}/users/PASTE-A-USER-ID-HERE
+Authorization: Bearer {{adminToken}}
+
+### Promote / deactivate — ADMIN only (revokes that user's sessions)
+PATCH {{baseUrl}}/users/PASTE-A-USER-ID-HERE
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "role": "ADMIN", "isActive": true }
+
+### Delete a user — ADMIN only; their posts cascade
+DELETE {{baseUrl}}/users/PASTE-A-USER-ID-HERE
+Authorization: Bearer {{adminToken}}
+
+### ------------------------------------------------- EXPECTED REJECTIONS ----
+
+### 401 — no token
+GET {{baseUrl}}/auth/me
+
+### 403 — USER reaching for the admin surface
+GET {{baseUrl}}/users
+Authorization: Bearer {{userToken}}
+
+### 400 — validation failure
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{ "name": "X", "email": "not-an-email", "password": "weak" }

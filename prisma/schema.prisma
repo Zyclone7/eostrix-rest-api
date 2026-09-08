@@ -1,0 +1,83 @@
+// Prisma schema — PostgreSQL (Neon)
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+  runtime      = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Prisma 7: connection URLs live in prisma.config.ts (for migrate/introspect)
+  // and in the driver adapter passed to PrismaClient (for runtime queries).
+}
+
+/// Application roles. ADMIN can manage every user and every post;
+/// USER can only manage their own account and their own posts.
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @unique
+  name      String
+  /// Argon2id/bcrypt hash — never the plaintext password.
+  password  String
+  role      Role     @default(USER)
+  isActive  Boolean  @default(true)
+  /// Any refresh token issued before this instant is rejected.
+  /// Bumped on password change and on "log out of all devices".
+  tokensValidFrom DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  posts         Post[]
+  refreshTokens RefreshToken[]
+
+  @@index([role])
+  @@map("users")
+}
+
+/// The example CRUD resource. Ownership is what the USER role is scoped to.
+model Post {
+  id        String   @id @default(uuid()) @db.Uuid
+  title     String
+  content   String
+  published Boolean  @default(false)
+  authorId  String   @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([authorId])
+  @@index([published])
+  @@index([createdAt])
+  @@map("posts")
+}
+
+/// Refresh tokens are stored as SHA-256 hashes so a database leak
+/// cannot be replayed against the API. Rotated on every refresh.
+model RefreshToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  tokenHash  String    @unique
+  userId     String    @db.Uuid
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  /// Set when this token is rotated, pointing at its replacement,
+  /// so reuse of an old token can be detected.
+  replacedBy String?
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
