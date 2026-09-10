@@ -172,6 +172,7 @@ src/
   modules/
     auth/              register, login, refresh, logout, change-password
     users/             admin user management + self-service profile
+    departments/       organisational units and their membership
     posts/             the ownership-scoped CRUD resource
 ```
 
@@ -196,6 +197,10 @@ so a rule cannot be bypassed by reaching a service from a different route.
 | List / read users | ❌ | ❌ | ✅ |
 | Create / edit / delete users | ❌ | ❌ | ✅ |
 | Change a role or deactivate | ❌ | ❌ | ✅ |
+| Read the department directory | ❌ | ✅ | ✅ |
+| Create / edit / delete a department | ❌ | ❌ | ✅ |
+| See a department roster | ❌ | ❌ | ✅ |
+| Place a user in a department | ❌ | ❌ | ✅ |
 
 Two details worth knowing:
 
@@ -204,6 +209,9 @@ Two details worth knowing:
   schemas, and Zod strips unknown keys — so `{"role":"ADMIN"}` in a signup body
   is silently discarded rather than honoured. Only `POST /users` and
   `PATCH /users/:id`, both admin-gated, can set a role.
+- **Departments are an admin decision, not a self-service one.** Like `role`,
+  `departmentId` is absent from `PATCH /users/me`, so a user cannot move
+  themselves into another department by editing their own profile.
 - **A hidden post returns 404, not 403.** Answering 403 would confirm that the
   id exists, which is itself a disclosure.
 
@@ -230,11 +238,42 @@ Base URL: `/api/v1`. Send the access token as `Authorization: Bearer <token>`.
 | Method | Path | Access |
 | --- | --- | --- |
 | `PATCH` | `/users/me` | Authenticated (name, email only) |
-| `GET` | `/users` | **Admin** — paginated, `?role=`, `?isActive=`, `?search=` |
-| `POST` | `/users` | **Admin** — may set `role` and `isActive` |
+| `GET` | `/users` | **Admin** — paginated, `?role=`, `?isActive=`, `?search=`, `?departmentId=`, `?unassigned=true` |
+| `POST` | `/users` | **Admin** — may set `role`, `isActive` and `departmentId` |
 | `GET` | `/users/:id` | **Admin** |
 | `PATCH` | `/users/:id` | **Admin** |
 | `DELETE` | `/users/:id` | **Admin** |
+
+Every user payload carries its placement as `departmentId` plus a nested
+`department` of `{ id, name, code }`, or `null` when the account is unplaced.
+
+### Departments
+
+An organisational unit — IT, Accounting, Economics — that users are placed in.
+A user belongs to at most one. The directory is readable by any signed-in user
+so a client can render a picker; membership is admin territory.
+
+| Method | Path | Access |
+| --- | --- | --- |
+| `GET` | `/departments` | Authenticated — `?page=`, `?limit=`, `?search=`, `?isActive=`, `?sortBy=` |
+| `GET` | `/departments/:id` | Authenticated — includes `_count.users` |
+| `POST` | `/departments` | **Admin** — `name` and `code` are both unique |
+| `PATCH` | `/departments/:id` | **Admin** |
+| `DELETE` | `/departments/:id` | **Admin** — 409 while it still has members |
+| `GET` | `/departments/:id/members` | **Admin** — the roster, same filters as `/users` |
+| `POST` | `/departments/:id/members` | **Admin** — bulk assign `{ "userIds": [...] }` |
+| `DELETE` | `/departments/:id/members/:userId` | **Admin** — leaves the account unplaced |
+
+Three rules the service enforces:
+
+- **The code is case-folded.** `it` and `IT` are the same department, because
+  the schema uppercases before it validates — the same trick `emailSchema` uses
+  for addresses, so the uniqueness check and the stored value always agree.
+- **A department with members cannot be deleted.** The foreign key is
+  `onDelete: Restrict`, and the service turns that into a 409 naming the number
+  of members to reassign first, rather than a raw database error.
+- **An inactive department takes no new members.** Retiring one keeps its
+  history and its current roster, but every placement path refuses it.
 
 ### Posts
 

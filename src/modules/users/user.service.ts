@@ -3,6 +3,7 @@ import { ApiError } from '../../utils/ApiError';
 import { hashPassword } from '../../utils/password';
 import { buildMeta, resolveSort, skipTake } from '../../utils/pagination';
 import { publicUserSelect } from '../auth/auth.service';
+import { assertAssignable } from '../departments/department.service';
 import { Role } from '../../generated/prisma/enums';
 import type { Prisma } from '../../generated/prisma/client';
 import type {
@@ -15,11 +16,14 @@ import type {
 const SORTABLE = ['createdAt', 'updatedAt', 'name', 'email', 'role'] as const;
 
 export async function listUsers(query: ListUsersQuery) {
-  const { page, limit, sortOrder, search, role, isActive } = query;
+  const { page, limit, sortOrder, search, role, isActive, departmentId, unassigned } = query;
 
   const where: Prisma.UserWhereInput = {
     ...(role ? { role } : {}),
     ...(isActive !== undefined ? { isActive } : {}),
+    // `unassigned` wins over an explicit id: asking for both is contradictory,
+    // and the narrower "has no department" reading is the useful one.
+    ...(unassigned ? { departmentId: null } : departmentId ? { departmentId } : {}),
     ...(search
       ? {
           OR: [
@@ -55,6 +59,8 @@ export async function getUserById(id: string) {
 }
 
 export async function createUser(input: CreateUserInput) {
+  if (input.departmentId) await assertAssignable(input.departmentId);
+
   const existing = await prisma.user.findUnique({
     where: { email: input.email },
     select: { id: true },
@@ -99,6 +105,8 @@ export async function adminUpdateUser(
   }
 
   if (input.email) await assertEmailAvailable(input.email, targetId);
+  // `null` is a deliberate unassignment, so only a non-null id is checked.
+  if (input.departmentId) await assertAssignable(input.departmentId);
 
   const user = await prisma.user.update({
     where: { id: targetId },

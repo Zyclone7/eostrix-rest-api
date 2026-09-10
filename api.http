@@ -106,6 +106,59 @@ Content-Type: application/json
 DELETE {{baseUrl}}/posts/{{postId}}
 Authorization: Bearer {{userToken}}
 
+### ---------------------------------------------------------- DEPARTMENTS ----
+### Organisational units. Any signed-in user can read the directory;
+### everything that exposes or changes membership is ADMIN only.
+
+### List departments — any signed-in user, includes the member count
+GET {{baseUrl}}/departments?page=1&limit=20&sortBy=name&sortOrder=asc
+Authorization: Bearer {{userToken}}
+
+### Search and filter
+GET {{baseUrl}}/departments?search=account&isActive=true
+Authorization: Bearer {{userToken}}
+
+### Create one — ADMIN only; the code is stored uppercased
+POST {{baseUrl}}/departments
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Information Technology",
+  "code": "it",
+  "description": "Systems, infrastructure and support."
+}
+
+### Read one — any signed-in user
+GET {{baseUrl}}/departments/PASTE-A-DEPARTMENT-ID-HERE
+Authorization: Bearer {{userToken}}
+
+### Rename or retire one — ADMIN only
+PATCH {{baseUrl}}/departments/PASTE-A-DEPARTMENT-ID-HERE
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "name": "Information Technology", "isActive": true }
+
+### The roster — ADMIN only, same filters as GET /users
+GET {{baseUrl}}/departments/PASTE-A-DEPARTMENT-ID-HERE/members?page=1&limit=20
+Authorization: Bearer {{adminToken}}
+
+### Assign users in bulk — ADMIN only
+POST {{baseUrl}}/departments/PASTE-A-DEPARTMENT-ID-HERE/members
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "userIds": ["PASTE-A-USER-ID-HERE"] }
+
+### Remove one member — ADMIN only; the account is left unplaced
+DELETE {{baseUrl}}/departments/PASTE-A-DEPARTMENT-ID-HERE/members/PASTE-A-USER-ID-HERE
+Authorization: Bearer {{adminToken}}
+
+### Delete a department — ADMIN only; 409 while it still has members
+DELETE {{baseUrl}}/departments/PASTE-A-DEPARTMENT-ID-HERE
+Authorization: Bearer {{adminToken}}
+
 ### --------------------------------------------------------------- USERS ----
 
 ### Self-service profile update (role/isActive are ignored here)
@@ -123,6 +176,14 @@ Authorization: Bearer {{adminToken}}
 GET {{baseUrl}}/users?role=USER&isActive=true&search=demo
 Authorization: Bearer {{adminToken}}
 
+### Filter by department, or find the accounts nobody has placed yet
+GET {{baseUrl}}/users?departmentId=PASTE-A-DEPARTMENT-ID-HERE
+Authorization: Bearer {{adminToken}}
+
+###
+GET {{baseUrl}}/users?unassigned=true
+Authorization: Bearer {{adminToken}}
+
 ### Create a user with an explicit role — ADMIN only
 POST {{baseUrl}}/users
 Authorization: Bearer {{adminToken}}
@@ -133,7 +194,8 @@ Content-Type: application/json
   "email": "second.admin@example.com",
   "password": "Str0ngPass!23",
   "role": "ADMIN",
-  "isActive": true
+  "isActive": true,
+  "departmentId": "PASTE-A-DEPARTMENT-ID-HERE"
 }
 
 ### Read one user — ADMIN only
@@ -146,6 +208,13 @@ Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
 { "role": "ADMIN", "isActive": true }
+
+### Move a user between departments — ADMIN only; null clears the placement
+PATCH {{baseUrl}}/users/PASTE-A-USER-ID-HERE
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "departmentId": "PASTE-A-DEPARTMENT-ID-HERE" }
 
 ### Delete a user — ADMIN only; their posts cascade
 DELETE {{baseUrl}}/users/PASTE-A-USER-ID-HERE

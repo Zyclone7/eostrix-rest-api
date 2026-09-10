@@ -25,6 +25,7 @@ const USER_ID = '3f1e0c6a-2b7d-4a5e-9c31-0a1b2c3d4e5f';
 const ADMIN_ID = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
 const POST_ID = '11111111-2222-4333-8444-555555555555';
 const BOOK_ID = '22222222-3333-4444-8555-666666666666';
+const DEPT_ID = '33333333-4444-4555-8666-777777777777';
 const PASSWORD = 'Str0ngPass!23';
 
 let passwordHash: string;
@@ -383,6 +384,223 @@ describe('PATCH /users/me', () => {
 
     expect(res.status).toBe(200);
     expect(db.user.update.mock.calls[0][0].data).toEqual({ name: 'Renamed' });
+  });
+});
+
+describe('departments', () => {
+  it('lets any signed-in user read the directory', async () => {
+    const token = tokenFor(Role.USER);
+    db.department.findMany.mockResolvedValue([]);
+    db.department.count.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get('/api/v1/departments')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.meta).toMatchObject({ page: 1, total: 0 });
+  });
+
+  it('rejects an anonymous read', async () => {
+    const res = await request(app).get('/api/v1/departments');
+
+    expect(res.status).toBe(401);
+  });
+
+  it('refuses a USER creating one with 403', async () => {
+    const token = tokenFor(Role.USER);
+
+    const res = await request(app)
+      .post('/api/v1/departments')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Shadow IT', code: 'SIT' });
+
+    expect(res.status).toBe(403);
+    expect(db.department.create).not.toHaveBeenCalled();
+  });
+
+  it('lets an ADMIN create one, storing the code uppercased', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.department.findMany.mockResolvedValue([]);
+    db.department.create.mockResolvedValue({ id: DEPT_ID, name: 'Accounting', code: 'ACC' });
+
+    const res = await request(app)
+      .post('/api/v1/departments')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Accounting', code: 'acc' });
+
+    expect(res.status).toBe(201);
+    expect(db.department.create.mock.calls[0][0].data).toMatchObject({ code: 'ACC' });
+  });
+
+  it('hides the member roster from a USER', async () => {
+    const token = tokenFor(Role.USER);
+
+    const res = await request(app)
+      .get(`/api/v1/departments/${DEPT_ID}/members`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('serves the roster to an ADMIN, scoped to the department', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.department.findUnique.mockResolvedValue({ id: DEPT_ID });
+    db.user.findMany.mockResolvedValue([]);
+    db.user.count.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get(`/api/v1/departments/${DEPT_ID}/members`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(db.user.findMany.mock.calls[0][0].where).toMatchObject({ departmentId: DEPT_ID });
+  });
+
+  it('400s on a malformed department id before touching the database', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+
+    const res = await request(app)
+      .get('/api/v1/departments/not-a-uuid')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(400);
+    expect(db.department.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('renames a department for an ADMIN', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.department.findUnique.mockResolvedValue({ id: DEPT_ID });
+    db.department.findMany.mockResolvedValue([]);
+    db.department.update.mockResolvedValue({ id: DEPT_ID, name: 'Finance', code: 'ACC' });
+
+    const res = await request(app)
+      .patch(`/api/v1/departments/${DEPT_ID}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Finance' });
+
+    expect(res.status).toBe(200);
+    expect(db.department.update.mock.calls[0][0].data).toEqual({ name: 'Finance' });
+  });
+
+  it('assigns a batch of users in one call', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.department.findUnique.mockResolvedValue({ id: DEPT_ID, isActive: true });
+    db.user.findMany.mockResolvedValue([{ id: USER_ID }]);
+    db.user.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await request(app)
+      .post(`/api/v1/departments/${DEPT_ID}/members`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ userIds: [USER_ID] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ assigned: 1 });
+  });
+
+  it('removes one member and leaves the account unplaced', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.department.findUnique.mockResolvedValue({ id: DEPT_ID });
+    db.user.findUnique
+      .mockResolvedValueOnce(session(Role.ADMIN, ADMIN_ID))
+      .mockResolvedValueOnce({ id: USER_ID, departmentId: DEPT_ID });
+    db.user.update.mockResolvedValue({ id: USER_ID, departmentId: null });
+
+    const res = await request(app)
+      .delete(`/api/v1/departments/${DEPT_ID}/members/${USER_ID}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(204);
+    expect(db.user.update.mock.calls[0][0].data).toEqual({ departmentId: null });
+  });
+
+  it('409s when deleting a department that still has members', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.department.findUnique.mockResolvedValue({ id: DEPT_ID, _count: { users: 2 } });
+
+    const res = await request(app)
+      .delete(`/api/v1/departments/${DEPT_ID}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(409);
+    expect(db.department.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('user placement', () => {
+  it('ignores a department a USER tries to set on their own profile', async () => {
+    const token = tokenFor(Role.USER);
+    db.user.update.mockResolvedValue({ id: USER_ID, name: 'Renamed' });
+
+    const res = await request(app)
+      .patch('/api/v1/users/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Renamed', departmentId: DEPT_ID });
+
+    expect(res.status).toBe(200);
+    expect(db.user.update.mock.calls[0][0].data).toEqual({ name: 'Renamed' });
+  });
+
+  it('lets an ADMIN place a user in an active department', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    // Exactly two reads happen, in this order: the session, then the target.
+    // Queueing a third would leak into the next test — `clearMocks` resets
+    // recorded calls but not the queue of one-shot results.
+    db.user.findUnique
+      .mockResolvedValueOnce(session(Role.ADMIN, ADMIN_ID))
+      .mockResolvedValueOnce({ id: USER_ID, role: Role.USER });
+    db.department.findUnique.mockResolvedValue({ id: DEPT_ID, isActive: true });
+    db.user.update.mockResolvedValue({ id: USER_ID, departmentId: DEPT_ID });
+
+    const res = await request(app)
+      .patch(`/api/v1/users/${USER_ID}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ departmentId: DEPT_ID });
+
+    expect(res.status).toBe(200);
+    expect(db.user.update.mock.calls[0][0].data).toEqual({ departmentId: DEPT_ID });
+  });
+
+  it('rejects placement into a retired department', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.user.findUnique
+      .mockResolvedValueOnce(session(Role.ADMIN, ADMIN_ID))
+      .mockResolvedValueOnce({ id: USER_ID, role: Role.USER });
+    db.department.findUnique.mockResolvedValue({ id: DEPT_ID, isActive: false });
+
+    const res = await request(app)
+      .patch(`/api/v1/users/${USER_ID}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ departmentId: DEPT_ID });
+
+    expect(res.status).toBe(400);
+    expect(db.user.update).not.toHaveBeenCalled();
+  });
+
+  it('filters the user list by department', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.user.findMany.mockResolvedValue([]);
+    db.user.count.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get(`/api/v1/users?departmentId=${DEPT_ID}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(db.user.findMany.mock.calls[0][0].where).toMatchObject({ departmentId: DEPT_ID });
+  });
+
+  it('finds the accounts nobody has placed yet', async () => {
+    const token = tokenFor(Role.ADMIN, ADMIN_ID);
+    db.user.findMany.mockResolvedValue([]);
+    db.user.count.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get('/api/v1/users?unassigned=true')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(db.user.findMany.mock.calls[0][0].where).toMatchObject({ departmentId: null });
   });
 });
 

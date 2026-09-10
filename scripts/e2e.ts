@@ -105,6 +105,7 @@ async function main(): Promise<void> {
       body: { name: 'Bob', email: bobEmail, password },
     });
     const bobToken: string = bob.body.data.accessToken;
+    const bobId: string = bob.body.data.user.id;
 
     const duplicate = await call('POST', '/auth/register', {
       body: { name: 'Alice again', email: aliceEmail, password },
@@ -216,6 +217,107 @@ async function main(): Promise<void> {
 
     const userDeletes = await call('DELETE', `/users/${aliceId}`, { token: aliceToken });
     assert('USER cannot delete accounts (403)', userDeletes.status === 403);
+
+    section('Departments');
+    const deptCode = `E2E${stamp}`.slice(-16);
+    const deptCreated = await call('POST', '/departments', {
+      token: adminToken,
+      body: {
+        name: `E2E Department ${stamp}`,
+        code: deptCode.toLowerCase(),
+        description: 'Created by the e2e run.',
+      },
+    });
+    assert('ADMIN can create a department (201)', deptCreated.status === 201, JSON.stringify(deptCreated.body));
+    assert(
+      'the code is stored uppercased',
+      deptCreated.body?.data?.department?.code === deptCode.toUpperCase(),
+      String(deptCreated.body?.data?.department?.code),
+    );
+    const deptId: string = deptCreated.body.data.department.id;
+
+    const deptDuplicate = await call('POST', '/departments', {
+      token: adminToken,
+      body: { name: `Another ${stamp}`, code: deptCode },
+    });
+    assert('a duplicate code is rejected with 409', deptDuplicate.status === 409, String(deptDuplicate.status));
+
+    const deptByUser = await call('POST', '/departments', {
+      token: aliceToken,
+      body: { name: `Shadow ${stamp}`, code: `SH${stamp}`.slice(-16) },
+    });
+    assert('USER cannot create a department (403)', deptByUser.status === 403, String(deptByUser.status));
+
+    const directory = await call('GET', '/departments?limit=100', { token: aliceToken });
+    assert('any signed-in user can read the directory', directory.status === 200, String(directory.status));
+
+    const rosterAsUser = await call('GET', `/departments/${deptId}/members`, { token: aliceToken });
+    assert('USER cannot read a roster (403)', rosterAsUser.status === 403, String(rosterAsUser.status));
+
+    const assigned = await call('POST', `/departments/${deptId}/members`, {
+      token: adminToken,
+      body: { userIds: [aliceId, bobId] },
+    });
+    assert('ADMIN can assign members in bulk', assigned.status === 200, JSON.stringify(assigned.body));
+    assert('both users were placed', assigned.body?.data?.assigned === 2, String(assigned.body?.data?.assigned));
+
+    const roster = await call('GET', `/departments/${deptId}/members`, { token: adminToken });
+    assert('the roster lists both members', roster.body?.meta?.total === 2, JSON.stringify(roster.body?.meta));
+    assert('rosters never expose password hashes', !JSON.stringify(roster.body).includes('$2'));
+
+    const byDepartment = await call('GET', `/users?departmentId=${deptId}`, { token: adminToken });
+    assert(
+      'the user list can be filtered by department',
+      byDepartment.body?.meta?.total === 2,
+      JSON.stringify(byDepartment.body?.meta),
+    );
+
+    const deleteWithMembers = await call('DELETE', `/departments/${deptId}`, { token: adminToken });
+    assert(
+      'a department with members cannot be deleted (409)',
+      deleteWithMembers.status === 409,
+      String(deleteWithMembers.status),
+    );
+
+    const removedMember = await call('DELETE', `/departments/${deptId}/members/${bobId}`, {
+      token: adminToken,
+    });
+    assert('ADMIN can remove one member (204)', removedMember.status === 204, String(removedMember.status));
+
+    const unassigned = await call('GET', '/users?unassigned=true&limit=100', { token: adminToken });
+    assert(
+      'the removed member shows up as unassigned',
+      JSON.stringify(unassigned.body?.data ?? []).includes(bobId),
+      String(unassigned.status),
+    );
+
+    // Bob is unplaced at this point, so a successful self-placement would be
+    // visible — which is exactly what must not happen.
+    const selfMove = await call('PATCH', '/users/me', {
+      token: bobToken,
+      body: { name: 'Bob Renamed', departmentId: deptId },
+    });
+    assert(
+      'departmentId is ignored on self-update',
+      selfMove.status === 200 && selfMove.body?.data?.user?.department === null,
+      JSON.stringify(selfMove.body?.data?.user?.department),
+    );
+
+    const retired = await call('PATCH', `/departments/${deptId}`, {
+      token: adminToken,
+      body: { isActive: false },
+    });
+    assert('ADMIN can retire a department', retired.status === 200, String(retired.status));
+
+    const placeIntoRetired = await call('POST', `/departments/${deptId}/members`, {
+      token: adminToken,
+      body: { userIds: [bobId] },
+    });
+    assert(
+      'a retired department takes no new members (400)',
+      placeIntoRetired.status === 400,
+      String(placeIntoRetired.status),
+    );
 
     section('Admin overrides');
     const adminEdits = await call('PATCH', `/posts/${postId}`, {
@@ -444,6 +546,11 @@ async function main(): Promise<void> {
     // leaves its test users in the database and the next run collides with them.
     await prisma.user
       .deleteMany({ where: { email: { in: [aliceEmail, bobEmail] } } })
+      .catch(() => undefined);
+    // After the users, never before: the foreign key refuses to drop a
+    // department that still has members.
+    await prisma.department
+      .deleteMany({ where: { code: { startsWith: 'E2E' } } })
       .catch(() => undefined);
 
     server.close();
