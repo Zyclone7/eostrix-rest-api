@@ -10,6 +10,12 @@ import {
   updateProfileSchema,
 } from '../../src/modules/users/user.schema';
 import { createPostSchema, updatePostSchema } from '../../src/modules/posts/post.schema';
+import {
+  assignMembersSchema,
+  createDepartmentSchema,
+  listDepartmentsSchema,
+  updateDepartmentSchema,
+} from '../../src/modules/departments/department.schema';
 
 const VALID_PASSWORD = 'Str0ngPass!23';
 
@@ -189,5 +195,48 @@ describe('post schemas', () => {
 
   it('allows a partial update', () => {
     expect(updatePostSchema.parse({ published: true })).toEqual({ published: true });
+  });
+});
+
+describe('department schemas', () => {
+  it('uppercases and trims the code so "it" and "IT" are one department', () => {
+    const parsed = createDepartmentSchema.parse({ name: 'Information Technology', code: ' it ' });
+
+    expect(parsed.code).toBe('IT');
+  });
+
+  it.each([
+    ['too short', 'I'],
+    ['too long', 'A'.repeat(17)],
+    ['punctuated', 'IT!'],
+    ['leading hyphen', '-IT'],
+  ])('rejects a code that is %s', (_label, code) => {
+    expect(() => createDepartmentSchema.parse({ name: 'Information Technology', code })).toThrow();
+  });
+
+  it('defaults a new department to active', () => {
+    const parsed = createDepartmentSchema.parse({ name: 'Accounting', code: 'ACC' });
+
+    expect(parsed.isActive).toBe(true);
+  });
+
+  it('rejects an empty update but allows clearing the description', () => {
+    expect(() => updateDepartmentSchema.parse({})).toThrow();
+    expect(updateDepartmentSchema.parse({ description: null })).toEqual({ description: null });
+  });
+
+  it('coerces the isActive list filter from its query-string form', () => {
+    expect(listDepartmentsSchema.parse({ isActive: 'false' }).isActive).toBe(false);
+  });
+
+  it('requires at least one real user id to assign', () => {
+    expect(() => assignMembersSchema.parse({ userIds: [] })).toThrow();
+    expect(() => assignMembersSchema.parse({ userIds: ['not-a-uuid'] })).toThrow();
+  });
+
+  it('caps a bulk assignment at 100 users', () => {
+    const ids = Array.from({ length: 101 }, () => '11111111-1111-4111-8111-111111111111');
+
+    expect(() => assignMembersSchema.parse({ userIds: ids })).toThrow();
   });
 });

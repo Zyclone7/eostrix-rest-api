@@ -28,6 +28,7 @@ export interface ModelMock {
 
 export interface PrismaMock {
   user: ModelMock;
+  department: ModelMock;
   post: ModelMock;
   book: ModelMock;
   refreshToken: ModelMock;
@@ -56,6 +57,7 @@ function model(): ModelMock {
 export function buildPrismaModuleMock() {
   const prisma: PrismaMock = {
     user: model(),
+    department: model(),
     post: model(),
     book: model(),
     refreshToken: model(),

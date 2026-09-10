@@ -12,11 +12,14 @@ export const createUserSchema = z.object({
   password: passwordSchema,
   role: roleSchema.default(Role.USER),
   isActive: z.boolean().default(true),
+  /** Optional placement. The department must exist and still be active. */
+  departmentId: z.uuid('A valid department id is required').optional(),
 });
 
 /**
- * Fields a caller may change on their own profile. `role` and `isActive` are
- * absent by design — self-promotion to ADMIN must be impossible.
+ * Fields a caller may change on their own profile. `role`, `isActive` and
+ * `departmentId` are absent by design — self-promotion to ADMIN must be
+ * impossible, and moving yourself between departments is an admin decision.
  */
 export const updateProfileSchema = z
   .object({
@@ -34,6 +37,8 @@ export const adminUpdateUserSchema = z
     email: emailSchema.optional(),
     role: roleSchema.optional(),
     isActive: z.boolean().optional(),
+    /** `null` clears the placement, leaving the account without a department. */
+    departmentId: z.uuid('A valid department id is required').nullable().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: 'At least one field must be provided',
@@ -42,6 +47,12 @@ export const adminUpdateUserSchema = z
 export const listUsersSchema = paginationSchema.extend({
   role: roleSchema.optional(),
   isActive: z
+    .enum(['true', 'false'])
+    .transform((value) => value === 'true')
+    .optional(),
+  departmentId: z.uuid('A valid department id is required').optional(),
+  /** `?unassigned=true` finds the accounts nobody has placed yet. */
+  unassigned: z
     .enum(['true', 'false'])
     .transform((value) => value === 'true')
     .optional(),

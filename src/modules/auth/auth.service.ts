@@ -10,6 +10,7 @@ import {
   signRefreshToken,
   verifyRefreshToken,
 } from '../../utils/jwt';
+import { departmentSummarySelect } from '../departments/department.select';
 import { Role } from '../../generated/prisma/enums';
 import type { ChangePasswordInput, LoginInput, RegisterInput } from './auth.schema';
 
@@ -20,6 +21,8 @@ export const publicUserSelect = {
   name: true,
   role: true,
   isActive: true,
+  departmentId: true,
+  department: { select: departmentSummarySelect },
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -78,7 +81,12 @@ export async function register(input: RegisterInput, ctx: RequestContext) {
 }
 
 export async function login(input: LoginInput, ctx: RequestContext) {
-  const user = await prisma.user.findUnique({ where: { email: input.email } });
+  // The whole row is needed here for the password hash, so the department is
+  // pulled alongside it rather than through `publicUserSelect`.
+  const user = await prisma.user.findUnique({
+    where: { email: input.email },
+    include: { department: { select: departmentSummarySelect } },
+  });
 
   // Same error and comparable timing for "no such user" and "wrong password",
   // so the endpoint cannot be used to enumerate registered addresses.
@@ -101,6 +109,8 @@ export async function login(input: LoginInput, ctx: RequestContext) {
       name: user.name,
       role: user.role,
       isActive: user.isActive,
+      departmentId: user.departmentId,
+      department: user.department,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     },

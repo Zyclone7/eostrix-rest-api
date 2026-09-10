@@ -21,6 +21,28 @@ enum Role {
   ADMIN
 }
 
+/// An organisational unit a user belongs to — IT, Accounting, Economics, ...
+///
+/// Kept as a table rather than an enum so departments can be created and
+/// renamed at runtime without a migration and a redeploy.
+model Department {
+  id          String   @id @default(uuid()) @db.Uuid
+  /// Human-readable label, e.g. "Information Technology".
+  name        String   @unique
+  /// Short uppercase handle used in URLs, reports and imports, e.g. "IT".
+  code        String   @unique
+  description String?
+  /// A retired department keeps its history but accepts no new members.
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
+
+  @@index([isActive])
+  @@map("departments")
+}
+
 model User {
   id        String   @id @default(uuid()) @db.Uuid
   email     String   @unique
@@ -29,6 +51,10 @@ model User {
   password  String
   role      Role     @default(USER)
   isActive  Boolean  @default(true)
+  /// Which department the user belongs to. Optional: an account can exist
+  /// before it has been placed, and deleting a department is blocked while
+  /// it still has members, so this never dangles.
+  departmentId String? @db.Uuid
   /// Any refresh token issued before this instant is rejected.
   /// Bumped on password change and on "log out of all devices".
   tokensValidFrom DateTime @default(now())
@@ -38,8 +64,10 @@ model User {
   posts         Post[]
   refreshTokens RefreshToken[]
   books         Book[]
+  department    Department? @relation(fields: [departmentId], references: [id], onDelete: Restrict)
 
   @@index([role])
+  @@index([departmentId])
   @@map("users")
 }
 
